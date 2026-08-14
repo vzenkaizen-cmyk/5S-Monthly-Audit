@@ -3,6 +3,7 @@
 A simple web-based system for conducting and managing 5S audits efficiently.
 
 ✨ Features
+
 📝 Section-wise 5S audit scoring
 
 📊 Real-time overall score
@@ -14,6 +15,8 @@ A simple web-based system for conducting and managing 5S audits efficiently.
 🗑️ Delete audits
 
 🚦 Overall audit status indicator
+
+
 
 🏆 5S Audit Sections
 
