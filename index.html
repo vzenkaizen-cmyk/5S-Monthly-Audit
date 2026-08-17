@@ -299,7 +299,8 @@
   <div style="padding:0 28px 40px;" id="bottomWrap"></div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 (function(){
   const root = document.getElementById('jasteca-root');
@@ -906,73 +907,69 @@
     refreshAll();
   }
 
-  // ---------------- Storage ----------------
-  // window.storage is provided by the Claude Artifacts runtime and persists
-  // data server-side across sessions and devices for the signed-in user.
-  // If this file is hosted OUTSIDE Claude.ai (e.g. plain web server, GitHub
-  // Pages, Live Server) there is no window.storage, so we fall back to
-  // localStorage. IMPORTANT: localStorage only lives on the single browser
-  // it was saved in — it is NOT a shared database, so records saved by one
-  // auditor on one device will NOT be visible to anyone else or on any
-  // other device. This is almost certainly why "marks are not being
-  // recorded" from the auditor's point of view. To get a real shared,
-  // multi-user database for this form, it needs a backend (e.g. the same
-  // Postgres/Neon + API approach used for the Kaizen Suggestion Log) rather
-  // than a client-only fallback.
-  if (!window.storage) {
-    window.storage = {
-      async get(key, shared){
-        void shared;
-        const value = window.localStorage.getItem(key);
-        return value === null ? null : { value };
-      },
-      async set(key, value, shared){
-        void shared;
-        window.localStorage.setItem(key, value);
-        return { value };
-      },
-      async delete(key, shared){
-        void shared;
-        window.localStorage.removeItem(key);
-      }
-    };
-  }
+  // ---------------- Supabase database storage ----------------
+  // 1) Create a Supabase project.
+  // 2) Paste your Project URL and Publishable Key below.
+  // 3) Run the supplied SQL script once in Supabase SQL Editor.
+  // IMPORTANT: Never put a Supabase secret/service_role key in this file.
+  const SUPABASE_URL = 'YOUR_SUPABASE_PROJECT_URL';
+  const SUPABASE_PUBLISHABLE_KEY = 'YOUR_SUPABASE_PUBLISHABLE_KEY';
 
-  // Saved audits are stored as SHARED records (shared=true) so that every
-  // auditor using this form — on any device — can see and load the same
-  // set of saved audits for a given plant site and month. This is what
-  // "recording" a mark actually requires: a store that is not scoped to a
-  // single browser.
-  const SHARED = true;
-  const INDEX_KEY = 'audit-index';
+  let supabaseClient = null;
+  let dbReady = false;
 
-  function auditKey(site, month){ return `audit:${site}:${month}`; }
-
-  async function getIndex(){
+  function initSupabase(){
+    if(!window.supabase || SUPABASE_URL.startsWith('YOUR_') || SUPABASE_PUBLISHABLE_KEY.startsWith('YOUR_')){
+      showStatus('Database not configured. Add your Supabase URL and publishable key.', true);
+      return false;
+    }
     try{
-      const r = await window.storage.get(INDEX_KEY, SHARED);
-      return r ? JSON.parse(r.value) : [];
-    }catch(e){ console.error('index load failed', e); return []; }
-  }
-
-  async function setIndex(list){
-    try{ await window.storage.set(INDEX_KEY, JSON.stringify(list), SHARED); }
-    catch(e){ console.error('index save failed', e); }
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+      dbReady = true;
+      return true;
+    }catch(e){
+      console.error('Supabase initialization failed:', e);
+      showStatus('Could not initialize the database connection.', true);
+      return false;
+    }
   }
 
   function showStatus(msg, isErr){
     elStatus.textContent = msg;
     elStatus.style.color = isErr ? 'var(--red)' : 'var(--green-deep)';
-    setTimeout(()=>{ if(elStatus.textContent===msg) elStatus.textContent=''; }, 3500);
+    setTimeout(()=>{ if(elStatus.textContent===msg) elStatus.textContent=''; }, 4500);
+  }
+
+  async function getAuditsForSite(site){
+    if(!dbReady && !initSupabase()) return [];
+    let query = supabaseClient
+      .from('five_s_audits')
+      .select('id, organisation, site, department, audit_month, auditor, overall_total, saved_at, updated_at')
+      .order('audit_month', {ascending:false});
+    if(site) query = query.eq('site', site);
+
+    const {data, error} = await query;
+    if(error){
+      console.error('Database load failed:', error);
+      showStatus('Could not load saved audits: '+error.message, true);
+      return [];
+    }
+    return data || [];
   }
 
   async function refreshLoadSelect(){
-    const list = await getIndex();
-    const site = audit.meta.site;
-    const filtered = site ? list.filter(x=>x.site===site) : list;
-    filtered.sort((a,b)=> (b.site+b.month).localeCompare(a.site+a.month));
+    const list = await getAuditsForSite(audit.meta.site);
     elLoadSelect.innerHTML = '<option value="">— select record —</option>' +
-      filtered.map(x=>`<option value="${x.site}|${x.month}">${x.site} · ${x.month}${x.org? ' · '+x.org:''} (${x.total}/${GRAND_MAX+Q14_MAX})</option>`).join('');
+      list.map(x=>{
+        const month = x.audit_month || '';
+        const label = `${x.site} · ${month}${x.organisation ? ' · '+x.organisation : ''} (${x.overall_total}/${GRAND_MAX+Q14_MAX})`;
+        return `<option value="${x.site}|${month}">${escHtml(label)}</option>`;
+      }).join('');
+
+    if(audit.meta.site && audit.meta.month){
+      const value = `${audit.meta.site}|${audit.meta.month}`;
+      if([...elLoadSelect.options].some(o=>o.value===value)) elLoadSelect.value=value;
+    }
   }
 
   async function saveAudit(){
@@ -990,22 +987,43 @@
       document.getElementById('signatureCanvas')?.scrollIntoView({behavior:'smooth',block:'center'});
       return;
     }
+    if(!dbReady && !initSupabase()) return;
+
     audit.savedAt = new Date().toISOString();
-    const key = auditKey(audit.meta.site, audit.meta.month);
+    const overallTotal = SECTIONS.reduce((a,s)=>a+sectionTotal(s),0) + q14Total();
+
+    const row = {
+      organisation: audit.meta.org || null,
+      site: audit.meta.site,
+      department: audit.meta.dept || null,
+      audit_month: audit.meta.month,
+      auditor: audit.meta.auditor || null,
+      scores: audit.scores || {},
+      section_notes: audit.sectionNotes || {},
+      q14: audit.q14 || {text:{}, score:{}},
+      special_note: audit.specialNote || '',
+      signature: audit.signature || {dataUrl:'', signedAt:null},
+      overall_total: overallTotal,
+      saved_at: audit.savedAt,
+      updated_at: new Date().toISOString()
+    };
+
     try{
-      await window.storage.set(key, JSON.stringify(audit), SHARED);
-      const total = SECTIONS.reduce((a,s)=>a+sectionTotal(s),0) + q14Total();
-      const list = await getIndex();
-      const idx = list.findIndex(x=>x.site===audit.meta.site && x.month===audit.meta.month);
-      const entry = {site:audit.meta.site, month:audit.meta.month, org:audit.meta.org, auditor:audit.meta.auditor, total, savedAt:audit.savedAt};
-      if(idx>=0) list[idx]=entry; else list.push(entry);
-      await setIndex(list);
+      const {data, error} = await supabaseClient
+        .from('five_s_audits')
+        .upsert(row, {onConflict:'site,audit_month'})
+        .select('id, site, audit_month, overall_total, saved_at, updated_at')
+        .single();
+
+      if(error) throw error;
+
+      audit.savedAt = data.saved_at || audit.savedAt;
       await refreshLoadSelect();
       elLoadSelect.value = `${audit.meta.site}|${audit.meta.month}`;
-      showStatus(`Saved audit for ${audit.meta.site} · ${audit.meta.month}.`);
+      showStatus(`Saved audit for ${audit.meta.site} · ${audit.meta.month} to Supabase.`);
     }catch(e){
       console.error(e);
-      showStatus('Could not save — please try again.', true);
+      showStatus('Could not save to database: '+(e.message || e), true);
     }
   }
 
@@ -1013,17 +1031,44 @@
     if(!compositeValue) return;
     const [site, month] = compositeValue.split('|');
     if(!site || !month) return;
+    if(!dbReady && !initSupabase()) return;
+
     try{
-      const r = await window.storage.get(auditKey(site, month), SHARED);
-      if(!r){ showStatus('No saved audit found for that site/month.', true); return; }
-      audit = JSON.parse(r.value);
-      if(!audit.meta.site) audit.meta.site = site;
-      if(!audit.signature) audit.signature={dataUrl:'',signedAt:null};
+      const {data, error} = await supabaseClient
+        .from('five_s_audits')
+        .select('*')
+        .eq('site', site)
+        .eq('audit_month', month)
+        .maybeSingle();
+
+      if(error) throw error;
+      if(!data){
+        showStatus('No saved audit found for that site/month.', true);
+        return;
+      }
+
+      audit = {
+        meta:{
+          org:data.organisation || '',
+          site:data.site || site,
+          dept:data.department || '',
+          month:data.audit_month || month,
+          auditor:data.auditor || ''
+        },
+        scores:data.scores || {},
+        sectionNotes:data.section_notes || {},
+        q14:data.q14 || {text:{}, score:{}},
+        specialNote:data.special_note || '',
+        signature:data.signature || {dataUrl:'',signedAt:null},
+        savedAt:data.saved_at || data.updated_at || null
+      };
+
       fullRender();
-      showStatus(`Loaded audit for ${site} · ${month}.`);
+      await refreshLoadSelect();
+      showStatus(`Loaded audit for ${site} · ${month} from Supabase.`);
     }catch(e){
       console.error(e);
-      showStatus('Could not load that audit.', true);
+      showStatus('Could not load that audit: '+(e.message || e), true);
     }
   }
 
@@ -1032,18 +1077,28 @@
     const month = audit.meta.month;
     if(!site || !month){ showStatus('Nothing to delete.', true); return; }
     if(!confirm(`Delete the saved audit for ${site} · ${month}? This cannot be undone.`)) return;
+    if(!dbReady && !initSupabase()) return;
+
     try{
-      await window.storage.delete(auditKey(site, month), SHARED);
-      const list = await getIndex();
-      await setIndex(list.filter(x=>!(x.site===site && x.month===month)));
+      const {error} = await supabaseClient
+        .from('five_s_audits')
+        .delete()
+        .eq('site', site)
+        .eq('audit_month', month);
+
+      if(error) throw error;
+
       await refreshLoadSelect();
       audit = blankAudit();
       audit.meta.site = site;
+      const now = new Date();
+      audit.meta.month = now.toISOString().slice(0,7);
       fullRender();
-      showStatus(`Deleted audit for ${site} · ${month}.`);
+      await refreshLoadSelect();
+      showStatus(`Deleted audit for ${site} · ${month} from Supabase.`);
     }catch(e){
       console.error(e);
-      showStatus('Could not delete — please try again.', true);
+      showStatus('Could not delete from database: '+(e.message || e), true);
     }
   }
 
@@ -1217,6 +1272,7 @@
     const now = new Date();
     audit.meta.month = now.toISOString().slice(0,7);
     fullRender();
+    initSupabase();
     await refreshLoadSelect();
   })();
 
