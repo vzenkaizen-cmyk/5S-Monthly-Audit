@@ -42,6 +42,9 @@ A simple web-based system for conducting and managing 5S audits efficiently.
 
 Open index.html in a browser or use VS Code Live Server.
 
+🚀 Run in a browser
+https://vzenkaizen-cmyk.github.io/5S-Monthly-Audit/
+
 🌐 Deployment
 
 The system can be deployed using GitHub Pages or another static web-hosting platform.
